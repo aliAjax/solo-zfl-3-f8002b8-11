@@ -1,5 +1,4 @@
-export type MaterialType = 'wood' | 'metal' | 'stone' | 'plastic' | 'mixed';
-export type OrientationType = 'east' | 'south' | 'west' | 'north' | 'southeast' | 'northeast' | 'southwest' | 'northwest';
+export type MaterialType = 'wood' | 'metal' | 'stone' | 'plastic' | 'mixed';export type OrientationType = 'east' | 'south' | 'west' | 'north' | 'southeast' | 'northeast' | 'southwest' | 'northwest';
 export type ShadeLevelType = 'none' | 'partial' | 'full';
 export type NoiseLevelType = 'quiet' | 'moderate' | 'noisy';
 export type StayDurationType = 'short' | 'medium' | 'long' | 'verylong';
@@ -85,3 +84,5 @@ export const TIME_PERIOD_ICONS: Record<TimePeriodType, string> = {
   evening: 'sunset',
   night: 'moon',
 };
+
+export * from './accessibility';

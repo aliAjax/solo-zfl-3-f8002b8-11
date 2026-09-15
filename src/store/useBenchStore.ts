@@ -1,8 +1,9 @@
 import { create } from 'zustand';
-import type { Bench, BenchExperience, MaterialType, OrientationType, ShadeLevelType, NoiseLevelType, StayDurationType } from '@/types';
+import type { Bench, BenchExperience, MaterialType, OrientationType, ShadeLevelType, NoiseLevelType } from '@/types';
 import { loadBenches, saveBenches } from '@/utils/storage';
 import { generateId } from '@/utils/comfort';
 import { mockBenches } from '@/data/mockBenches';
+import { refreshAccessEvaluation } from '@/store/useAccessStore';
 
 interface BenchState {
   benches: Bench[];
@@ -81,6 +82,7 @@ export const useBenchStore = create<BenchState & BenchActions>((set, get) => ({
     const newBenches = [newBench, ...get().benches];
     set({ benches: newBenches });
     saveBenches(newBenches);
+    refreshAccessEvaluation();
   },
 
   updateBench: (id, updates) => {
@@ -91,12 +93,14 @@ export const useBenchStore = create<BenchState & BenchActions>((set, get) => ({
     );
     set({ benches: newBenches });
     saveBenches(newBenches);
+    refreshAccessEvaluation();
   },
 
   deleteBench: (id) => {
     const newBenches = get().benches.filter((bench) => bench.id !== id);
     set({ benches: newBenches });
     saveBenches(newBenches);
+    refreshAccessEvaluation();
   },
 
   getBenchById: (id) => {

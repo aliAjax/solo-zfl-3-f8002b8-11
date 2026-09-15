@@ -14,8 +14,13 @@ import {
   Sunset,
   Moon,
   CloudSun,
+  Accessibility as AccessIcon,
+  CheckCircle2,
+  XCircle,
+  Route as RouteIcon,
 } from 'lucide-react';
 import { useBenchStore } from '@/store/useBenchStore';
+import { useAccessStore } from '@/store/useAccessStore';
 import {
   MATERIAL_LABELS,
   ORIENTATION_LABELS,
@@ -23,15 +28,24 @@ import {
   NOISE_LABELS,
   STAY_DURATION_LABELS,
   TIME_PERIOD_LABELS,
+  MODE_THRESHOLDS,
 } from '@/types';
-import type { TimePeriodType } from '@/types';
+import type { TimePeriodType, ModeId } from '@/types';
 import Rating from '@/components/Rating/Rating';
 import { calculateComfortScore, getComfortLevel, getComfortColor } from '@/utils/comfort';
+import { gradeBadgeClass, gradeLabel } from '@/utils/accessUi';
 
 export default function BenchDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { getBenchById, deleteBench, initialize, initialized } = useBenchStore();
+  const {
+    snapshot,
+    nodes,
+    trails,
+    initialize: initAccess,
+    initialized: accessReady,
+  } = useAccessStore();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   useEffect(() => {
@@ -39,6 +53,12 @@ export default function BenchDetail() {
       initialize();
     }
   }, [initialized, initialize]);
+
+  useEffect(() => {
+    if (initialized && !accessReady) {
+      initAccess();
+    }
+  }, [initialized, accessReady, initAccess]);
 
   const bench = id ? getBenchById(id) : undefined;
 
@@ -74,6 +94,21 @@ export default function BenchDetail() {
     const order: TimePeriodType[] = ['morning', 'noon', 'afternoon', 'evening', 'night'];
     return order.indexOf(a.timePeriod) - order.indexOf(b.timePeriod);
   });
+
+  // 无障碍评估结果（三模式）
+  const accessResults = snapshot?.evaluated
+    ? (Object.keys(MODE_THRESHOLDS) as ModeId[]).map((m) => ({
+        mode: m,
+        result: snapshot.results[m]?.find((r) => r.benchId === bench.id),
+      }))
+    : [];
+  const benchNode = nodes.find((n) => n.kind === 'bench' && n.benchId === bench.id);
+  const trailName = (tid: string) => {
+    const trail = trails.find((t) => t.id === tid);
+    if (!trail) return tid;
+    const nodeName = (nid: string) => nodes.find((n) => n.id === nid)?.name ?? nid;
+    return trail.name ?? `${nodeName(trail.from)} ↔ ${nodeName(trail.to)}`;
+  };
 
   const handleDelete = () => {
     if (id) {
@@ -256,6 +291,85 @@ export default function BenchDetail() {
                   编辑长椅时可以添加
                 </p>
               </div>
+            )}
+          </div>
+
+          <div className="paper-texture rounded-xl shadow-paper p-6 fade-in opacity-0 stagger-2">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-serif text-lg font-semibold text-deep-brown flex items-center gap-2">
+                <AccessIcon className="w-5 h-5 text-moss-green" />
+                无障碍通路
+              </h2>
+              <button
+                onClick={() => navigate('/access')}
+                className="text-xs text-moss-green hover:underline"
+              >
+                完整评估 →
+              </button>
+            </div>
+
+            {!snapshot?.evaluated ? (
+              <p className="text-sm text-ink-light">路网校验未通过或尚未评估，请前往无障碍页查看。</p>
+            ) : accessResults.length > 0 && accessResults.every((x) => x.result) ? (
+              <div className="space-y-3">
+                {accessResults.map(({ mode, result }) => {
+                  if (!result) return null;
+                  const path = result.path;
+                  return (
+                    <div key={mode} className="rounded-lg bg-warm-cream/60 p-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        {result.reachable ? (
+                          <CheckCircle2 className="w-4 h-4 text-moss-green flex-shrink-0" />
+                        ) : (
+                          <XCircle className="w-4 h-4 text-red-500 flex-shrink-0" />
+                        )}
+                        <span className="text-sm font-medium text-deep-brown">
+                          {MODE_THRESHOLDS[mode].label}
+                        </span>
+                        <span className={`ml-auto text-xs px-1.5 py-0.5 rounded ${result.reachable ? 'bg-moss-green/10 text-moss-green' : 'bg-red-50 text-red-600'}`}>
+                          {result.reachable ? '可达' : '不可达'}
+                        </span>
+                      </div>
+                      {result.reachable && path ? (
+                        <div className="text-xs text-ink-light space-y-1">
+                          <div className="flex items-center gap-1">
+                            <RouteIcon className="w-3 h-3 flex-shrink-0" />
+                            <span>
+                              自「{path.entranceName}」· {path.length}m · {path.segments.length} 段
+                            </span>
+                            <span className={`ml-auto px-1.5 py-0.5 rounded ${gradeBadgeClass(path.riskLevel)}`}>
+                              {gradeLabel(path.riskLevel)}
+                            </span>
+                          </div>
+                          <div>
+                            经：{path.trailIds.map((id) => trailName(id)).join(' → ')}
+                          </div>
+                        </div>
+                      ) : (
+                        <ul className="text-xs text-ink-light space-y-0.5">
+                          {result.reasons.map((reason) => (
+                            <li key={reason.code}>
+                              · {reason.label}
+                              {reason.trailIds.length > 0 && (
+                                <span>（{reason.trailIds.map((id) => trailName(id)).join('、')}）</span>
+                              )}
+                            </li>
+                          ))}
+                          {result.minRepair && (
+                            <li className="text-ochre pt-1">
+                              最小修复：{result.minRepair.actions.map((a) => a.label).join('、')}
+                            </li>
+                          )}
+                        </ul>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-sm text-ink-light">
+                {benchNode ? '评估结果缺失。' : '该长椅尚未挂接到路网节点，无法评估通路。'}
+              </p>
             )}
           </div>
 
