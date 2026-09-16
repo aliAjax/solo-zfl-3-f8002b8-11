@@ -18,6 +18,7 @@ import {
   CheckCircle2,
   XCircle,
   Route as RouteIcon,
+  AlertTriangle,
 } from 'lucide-react';
 import { useBenchStore } from '@/store/useBenchStore';
 import { useAccessStore } from '@/store/useAccessStore';
@@ -344,6 +345,15 @@ export default function BenchDetail() {
                           <div>
                             经：{path.trailIds.map((id) => trailName(id)).join(' → ')}
                           </div>
+                          {result.criticalTrailIds.length > 0 && (
+                            <div className="flex items-start gap-1 pt-0.5 text-amber-700">
+                              <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                              <span>
+                                关键断点（关闭后不可达）：
+                                {result.criticalTrailIds.map((id) => trailName(id)).join('、')}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <ul className="text-xs text-ink-light space-y-0.5">

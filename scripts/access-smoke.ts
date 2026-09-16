@@ -76,12 +76,12 @@ const closedT11 = evaluateMode({ ...input, closedTrailIds: ['t11'] }, 'wheelchai
 const b001closed = closedT11.find((r) => r.benchId === 'bench-001')!;
 assert(b001closed.reachable === false, '关闭 t11 后 bench-001 轮椅不可达（唯一自由通路被切断）');
 
-const impactT11 = snapshot.closureImpacts.find((c) => c.closedTrailId === 't11')!;
+const impactT11 = snapshot.closureImpacts.wheelchair.find((c) => c.closedTrailId === 't11')!;
 assert(impactT11.newlyUnreachable.includes('bench-001'), '关闭影响分析：t11 新增 bench-001 不可达');
 assert(impactT11.minRepair !== undefined, '关闭影响给出最小临时修复');
 
 // 5. 关闭 t1：经过广场的长椅改道或不可达
-const impactT1 = snapshot.closureImpacts.find((c) => c.closedTrailId === 't1')!;
+const impactT1 = snapshot.closureImpacts.wheelchair.find((c) => c.closedTrailId === 't1')!;
 console.log('关闭 t1 东门主道：新增不可达', impactT1.newlyUnreachable, '改道', impactT1.rerouted);
 
 // 6. 校验拦截
@@ -126,6 +126,93 @@ assert(orphanIssues.some((i) => i.code === 'entrance_broken' && i.level === 'war
 
 const unhooked = validateNetwork(mockNodes, mockTrails, [...mockBenches, { id: 'bench-999' } as never]);
 assert(unhooked.some((i) => i.code === 'bench_unhooked'), '未挂接长椅给警告');
+
+// ===== 回归：三处联动修复 =====
+
+// R1. 单步道关闭影响按模式区分：t9 西门里弄
+//   轮椅基线 bench-003 本就不可达 → 关闭 t9 不应新增不可达
+//   助行器基线 bench-003 经 t9 可达，t10 宽 0.7<0.9 走不了 → 关闭 t9 后新增不可达
+const imWcT9 = snapshot.closureImpacts.wheelchair.find((c) => c.closedTrailId === 't9')!;
+const imWkT9 = snapshot.closureImpacts.walker.find((c) => c.closedTrailId === 't9')!;
+assert(
+  !imWcT9.newlyUnreachable.includes('bench-003'),
+  '关闭影响-轮椅：t9 不新增 bench-003（基线已不可达）',
+);
+assert(
+  imWkT9.newlyUnreachable.includes('bench-003'),
+  '关闭影响-助行器：t9 关闭后 bench-003 新增不可达（不再沿用轮椅结果）',
+);
+assert(
+  Array.isArray(snapshot.closureImpacts.stroller) && snapshot.closureImpacts.stroller.length === mockTrails.length,
+  '三模式均有完整关闭影响分析',
+);
+
+// R2. 可达长椅也要有关键断点
+//   bench-001 轮椅责任路径走 [t11,t1]；t11 关闭后无路可达 → 关键断点
+//   t1 关闭时仍可自滨江入口经 t7→t8→t5→t3→t11 抵达 → t1 不算关键断点（只改道）
+const b001crit = wc.get('bench-001')!.criticalTrailIds;
+assert(b001crit.includes('t11'), `可达长椅 bench-001 标出关键断点 t11（实际 ${b001crit.join(',')}）`);
+assert(!b001crit.includes('t1'), 'bench-001 的 t1 有滨江替代路线，不是关键断点（关闭仅改道）');
+//   bench-006 有滨江/东门两条通路，但 t6 是进入该节点的唯一步道
+const b006crit = wc.get('bench-006')!.criticalTrailIds;
+assert(b006crit.includes('t6'), `bench-006 关键断点含唯一入口步道 t6（实际 ${b006crit.join(',')}）`);
+assert(!b006crit.includes('t8'), 'bench-006 经 t8 的滨江段有东门替代，t8 不是关键断点');
+//   关键断点与关闭影响一致：criticalTrailIds 中的步道关闭时必然新增不可达
+wc.forEach((r) => {
+  if (!r.reachable) return;
+  r.criticalTrailIds.forEach((tid) => {
+    const impact = snapshot.closureImpacts.wheelchair.find((c) => c.closedTrailId === tid)!;
+    assert(
+      impact.newlyUnreachable.includes(r.benchId),
+      `一致性：${r.benchId} 关键断点 ${tid} 关闭后确实新增不可达`,
+    );
+  });
+});
+
+// R3. 同一长椅重复挂接多个节点必须在保存前拦住（错误级）
+const dupHookNodes: NetworkNode[] = [
+  ...mockNodes,
+  { id: 'dup-node', name: '另一个梧桐节点', kind: 'bench', lat: 31.25, lng: 121.47, benchId: 'bench-001' },
+];
+const dupHookIssues = validateNetwork(dupHookNodes, mockTrails, mockBenches);
+const dupHook = dupHookIssues.filter((i) => i.code === 'duplicate_bench_hook');
+assert(dupHook.length === 1 && dupHook[0].level === 'error', '重复挂接报 1 项错误级问题');
+assert(dupHook[0].benchId === 'bench-001' && dupHook[0].nodeId === 'dup-node', '重复挂接问题指向后保存的节点与长椅');
+// 未重复挂接时不误报
+assert(!validateNetwork(mockNodes, mockTrails, mockBenches).some((i) => i.code === 'duplicate_bench_hook'), '正常路网无重复挂接误报');
+
+// 三模式的可达/路径/修复彼此自洽：修复组合应用后必须真的可达
+(['wheelchair', 'walker', 'stroller'] as ModeId[]).forEach((m) => {
+  snapshot.results[m].forEach((r) => {
+    if (r.reachable || !r.minRepair) return;
+    const repaired = new Set(r.minRepair.trailIds);
+    assert(repaired.size > 0, `${m}/${r.benchId}：最小修复路径非空`);
+    // 修复路径上每条步道都必须存在且修复动作覆盖其全部不达标项
+    r.minRepair.trailIds.forEach((tid) => {
+      assert(mockTrails.some((t) => t.id === tid), `${m}/${r.benchId}：修复步道 ${tid} 存在`);
+    });
+    const actions = new Set(r.minRepair.actions.map((a) => `${a.trailId}:${a.action}`));
+    r.reasons.forEach((reason) => {
+      reason.trailIds.forEach((tid) => {
+        const expected = {
+          slope_too_steep: 'flatten_slope',
+          width_too_narrow: 'widen',
+          steps_present: 'add_ramp',
+          surface_unusable: 'resurface',
+          dark_segment: 'add_lighting',
+          oneway_barrier: 'open_reverse',
+        } as Record<string, string>;
+        const action = expected[reason.code];
+        if (action) {
+          assert(
+            actions.has(`${tid}:${action}`),
+            `${m}/${r.benchId}：原因 ${reason.code} 与修复动作 ${action}(${tid}) 一致`,
+          );
+        }
+      });
+    });
+  });
+});
 
 console.log(`\n${failures === 0 ? '全部通过' : `${failures} 项失败`}`);
 process.exit(failures === 0 ? 0 : 1);

@@ -14,6 +14,7 @@ const CODE_LABELS: Record<NetworkIssue['code'], string> = {
   entrance_broken: '入口悬空',
   bench_unhooked: '长椅未挂接',
   dangling_bench_ref: '挂接失效',
+  duplicate_bench_hook: '重复挂接',
 };
 
 export default function IssuesPanel({ issues }: IssuesPanelProps) {

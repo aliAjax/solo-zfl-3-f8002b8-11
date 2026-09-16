@@ -8,6 +8,7 @@ import {
   Route as RouteIcon,
   CheckCircle2,
   XCircle,
+  AlertTriangle,
 } from 'lucide-react';
 import type { Bench } from '@/types';
 import type {
@@ -177,7 +178,11 @@ export default function BenchAccessCard({
                   {result.path.segments.map((seg, idx) => (
                     <div
                       key={`${seg.trailId}-${idx}`}
-                      className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-white/70 px-2.5 py-1.5 text-xs"
+                      className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-white/70 px-2.5 py-1.5 text-xs ${
+                        result.criticalTrailIds.includes(seg.trailId)
+                          ? 'ring-1 ring-amber-300'
+                          : ''
+                      }`}
                     >
                       <span className="font-medium text-deep-brown w-28 truncate">
                         {trailName(seg.trailId)}
@@ -220,6 +225,29 @@ export default function BenchAccessCard({
                     );
                   })}
                 </div>
+
+                {/* 可达长椅的关键断点：责任路径上关闭即断的桥接步道 */}
+                {result.criticalTrailIds.length > 0 && (
+                  <div className="mt-2 flex items-start gap-1.5 rounded-md border border-amber-200 bg-amber-50/70 px-2.5 py-1.5 text-xs text-amber-800">
+                    <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                    <span>
+                      关键断点（关闭后{MODE_THRESHOLDS[mode].label}即不可达）：
+                      {result.criticalTrailIds.map((id) => (
+                        <span
+                          key={id}
+                          className="mx-1 px-1.5 py-0.5 rounded bg-white/80 text-deep-brown"
+                        >
+                          {trailName(id)}
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                )}
+                {result.criticalTrailIds.length === 0 && result.path.segments.length > 0 && (
+                  <p className="mt-2 text-xs text-moss-green/90">
+                    责任路径存在冗余替代步道，关闭其中任意一条仍可抵达。
+                  </p>
+                )}
               </div>
             </div>
           ) : (

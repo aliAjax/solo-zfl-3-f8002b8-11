@@ -1,5 +1,5 @@
 import type { Bench } from '@/types';
-import type { AccessSnapshot, NetworkNode, Trail } from '@/types/accessibility';
+import type { AccessSnapshot, ModeId, NetworkNode, Trail } from '@/types/accessibility';
 
 const STORAGE_KEY = 'bench-archive-data';
 const NETWORK_KEY = 'bench-archive-network';
@@ -90,6 +90,15 @@ export function loadSnapshot(): AccessSnapshot | null {
     if (data) {
       const parsed = JSON.parse(data) as AccessSnapshot;
       if (parsed && parsed.version === 1 && Array.isArray(parsed.results?.wheelchair)) {
+        // 旧版本 closureImpacts 为单模式数组，升级为三模式结构
+        if (Array.isArray(parsed.closureImpacts as unknown)) {
+          const legacy = parsed.closureImpacts as unknown as AccessSnapshot['closureImpacts'][ModeId];
+          parsed.closureImpacts = {
+            wheelchair: legacy,
+            walker: legacy,
+            stroller: legacy,
+          };
+        }
         return parsed;
       }
     }

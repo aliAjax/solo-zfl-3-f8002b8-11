@@ -196,10 +196,17 @@ export function validateNetwork(
     }
   });
 
-  // 长椅未挂接
-  const hookedBenchIds = new Set(
-    nodes.filter((n) => n.kind === 'bench' && n.benchId).map((n) => n.benchId),
-  );
+  // 长椅未挂接 / 重复挂接
+  const hookNodesByBench = new Map<string, NetworkNode[]>();
+  nodes
+    .filter((n) => n.kind === 'bench' && n.benchId)
+    .forEach((n) => {
+      const list = hookNodesByBench.get(n.benchId!) ?? [];
+      list.push(n);
+      hookNodesByBench.set(n.benchId!, list);
+    });
+  const hookedBenchIds = new Set(hookNodesByBench.keys());
+
   benches.forEach((bench) => {
     if (!hookedBenchIds.has(bench.id)) {
       issues.push({
@@ -207,6 +214,23 @@ export function validateNetwork(
         code: 'bench_unhooked',
         benchId: bench.id,
         message: `长椅「${bench.name}」未挂接到任何路网节点，无法评估通路。`,
+      });
+    }
+  });
+
+  // 同一张长椅挂接到多个节点 —— 错误级，保存前必须拦住
+  hookNodesByBench.forEach((hooked, benchId) => {
+    if (hooked.length > 1) {
+      const bench = benches.find((b) => b.id === benchId);
+      const lastName = hooked[hooked.length - 1];
+      issues.push({
+        level: 'error',
+        code: 'duplicate_bench_hook',
+        nodeId: lastName.id,
+        benchId,
+        message: `长椅「${bench?.name ?? benchId}」被重复挂接到 ${hooked.length} 个地点（${hooked
+          .map((n) => `「${n.name}」`)
+          .join('、')}），同一张长椅只能挂接一个地点。`,
       });
     }
   });
@@ -351,13 +375,15 @@ interface FreePred {
   arc: Arc;
 }
 
-function freeDijkstra(
+type FreeState = Map<string, { dist: number; pred: FreePred | null; entrance: string }>;
+
+/** 构建当前模式下可自由通行（无关闭、无单向逆行、满足阈值）的有向邻接表 */
+function buildFreeAdj(
   nodeIds: string[],
   arcs: Arc[],
   trailMap: Map<string, Trail>,
-  entrances: Set<string>,
   mode: ModeThresholds,
-): Map<string, { dist: number; pred: FreePred | null; entrance: string }> {
+): Map<string, Arc[]> {
   const adj = new Map<string, Arc[]>();
   nodeIds.forEach((id) => adj.set(id, []));
   arcs.forEach((arc) => {
@@ -367,8 +393,19 @@ function freeDijkstra(
     if (trailProfileFailures(trail, mode).length > 0) return; // 阈值不满足
     adj.get(arc.from)?.push(arc);
   });
+  return adj;
+}
 
-  const state = new Map<string, { dist: number; pred: FreePred | null; entrance: string }>();
+function freeDijkstra(
+  nodeIds: string[],
+  arcs: Arc[],
+  trailMap: Map<string, Trail>,
+  entrances: Set<string>,
+  mode: ModeThresholds,
+): FreeState {
+  const adj = buildFreeAdj(nodeIds, arcs, trailMap, mode);
+
+  const state: FreeState = new Map();
   nodeIds.forEach((id) => state.set(id, { dist: Infinity, pred: null, entrance: '' }));
 
   // 简单二叉堆代价小，直接用数组线性取最小（网络规模很小）
@@ -404,6 +441,47 @@ function freeDijkstra(
   }
 
   return state;
+}
+
+/**
+ * 责任路径上的“桥接步道”：移除该步道后，任何入口都无法在当前模式下抵达目标。
+ * 即关键断点——可达长椅也需要标出。
+ */
+function findCriticalTrails(
+  target: string,
+  pathTrailIds: string[],
+  nodeIds: string[],
+  arcs: Arc[],
+  trailMap: Map<string, Trail>,
+  entrances: Set<string>,
+  mode: ModeThresholds,
+): string[] {
+  if (pathTrailIds.length === 0) return [];
+
+  const reachesTarget = (removedTrailId: string): boolean => {
+    const adj = buildFreeAdj(
+      nodeIds,
+      arcs.filter((arc) => arc.trailId !== removedTrailId),
+      trailMap,
+      mode,
+    );
+    const seen = new Set<string>();
+    const queue = Array.from(entrances);
+    queue.forEach((e) => seen.add(e));
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      if (cur === target) return true;
+      adj.get(cur)?.forEach((arc) => {
+        if (!seen.has(arc.to)) {
+          seen.add(arc.to);
+          queue.push(arc.to);
+        }
+      });
+    }
+    return false;
+  };
+
+  return pathTrailIds.filter((trailId) => !reachesTarget(trailId));
 }
 
 // ---------------------------------------------------------------------------
@@ -608,6 +686,17 @@ export function evaluateMode(input: EvaluationInput, modeId: ModeId): BenchAcces
       // 备用入口数：统计能到达该节点的入口数量（责任入口之外）
       const reachableEntrances = countReachableEntrances(nodeId);
 
+      // 可达长椅同样标出关键断点：责任路径上“关闭即断”的桥接步道
+      const criticalTrailIds = findCriticalTrails(
+        nodeId,
+        pathTrailIds,
+        nodeIds,
+        arcs,
+        trailMap,
+        entrances,
+        mode,
+      );
+
       const entranceNode = nodeMap.get(target.entrance);
       const path: ResponsiblePath = {
         entranceId: target.entrance,
@@ -628,7 +717,7 @@ export function evaluateMode(input: EvaluationInput, modeId: ModeId): BenchAcces
         path,
         alternativeCount: Math.max(0, reachableEntrances - 1),
         reasons: [],
-        criticalTrailIds: [],
+        criticalTrailIds,
       };
     }
 
@@ -717,61 +806,84 @@ function makeFingerprint(nodes: NetworkNode[], trails: Trail[]): string {
   return `fp-${Math.abs(hash).toString(36)}-${raw.length.toString(36)}`;
 }
 
+/**
+ * 全部模式的单步道关闭影响：每条步道关闭一次，分别在三套阈值下重算。
+ */
 export function computeClosureImpacts(
   input: EvaluationInput,
   baseline: Record<ModeId, BenchAccessResult[]>,
-  modeId: ModeId,
-): ClosureImpact[] {
+): Record<ModeId, ClosureImpact[]> {
   const { trails } = input;
-  const baseMap = new Map(baseline[modeId].map((r) => [r.benchId, r]));
+  const modeIds = Object.keys(MODE_THRESHOLDS) as ModeId[];
+  const out = {} as Record<ModeId, ClosureImpact[]>;
 
-  return trails.map((trail) => {
-    const closedResults = evaluateMode({ ...input, closedTrailIds: [trail.id] }, modeId);
-    const newlyUnreachable: string[] = [];
-    const rerouted: string[] = [];
+  // 每条步道只关闭一次，三套阈值一起重算，避免重复跑图
+  const closedCache = new Map<string, Record<ModeId, BenchAccessResult[]>>();
+  const closedFor = (trailId: string) => {
+    let cached = closedCache.get(trailId);
+    if (!cached) {
+      cached = {} as Record<ModeId, BenchAccessResult[]>;
+      const closedInput = { ...input, closedTrailIds: [trailId] };
+      modeIds.forEach((modeId) => {
+        cached![modeId] = evaluateMode(closedInput, modeId);
+      });
+      closedCache.set(trailId, cached);
+    }
+    return cached;
+  };
 
-    closedResults.forEach((result) => {
-      const base = baseMap.get(result.benchId);
-      if (!base || !base.reachable) return;
-      if (!result.reachable) {
-        newlyUnreachable.push(result.benchId);
-      } else if (
-        result.path?.entranceId !== base.path?.entranceId ||
-        result.path?.trailIds.join('>') !== base.path?.trailIds.join('>')
-      ) {
-        rerouted.push(result.benchId);
-      }
+  modeIds.forEach((modeId) => {
+    const baseMap = new Map(baseline[modeId].map((r) => [r.benchId, r]));
+    out[modeId] = trails.map((trail) => {
+      const closedResults = closedFor(trail.id)[modeId];
+      const newlyUnreachable: string[] = [];
+      const rerouted: string[] = [];
+
+      closedResults.forEach((result) => {
+        const base = baseMap.get(result.benchId);
+        if (!base || !base.reachable) return;
+        if (!result.reachable) {
+          newlyUnreachable.push(result.benchId);
+        } else if (
+          result.path?.entranceId !== base.path?.entranceId ||
+          result.path?.trailIds.join('>') !== base.path?.trailIds.join('>')
+        ) {
+          rerouted.push(result.benchId);
+        }
+      });
+
+      // 关闭期间的最小修复：合并每张新增不可达长椅各自的最省修复
+      const actionDedupe = new Map<string, RepairAction>();
+      const comboTrails = new Set<string>();
+      let viaEntrance = '';
+      newlyUnreachable.forEach((benchId) => {
+        const r = closedResults.find((x) => x.benchId === benchId);
+        if (r?.minRepair) {
+          viaEntrance = r.minRepair.viaEntranceId;
+          r.minRepair.actions.forEach((a) => {
+            const key = `${a.trailId}:${a.action}`;
+            if (!actionDedupe.has(key)) actionDedupe.set(key, a);
+          });
+          r.minRepair.trailIds.forEach((tid) => comboTrails.add(tid));
+        }
+      });
+
+      const actions = Array.from(actionDedupe.values());
+      const minRepair: RepairCombo | undefined =
+        actions.length > 0
+          ? {
+              actions,
+              totalCost: actions.reduce((sum, a) => sum + a.cost, 0),
+              viaEntranceId: viaEntrance,
+              trailIds: Array.from(comboTrails),
+            }
+          : undefined;
+
+      return { closedTrailId: trail.id, newlyUnreachable, rerouted, minRepair };
     });
-
-    // 关闭期间的最小修复：合并每张新增不可达长椅各自的最省修复
-    const actionDedupe = new Map<string, RepairAction>();
-    const comboTrails = new Set<string>();
-    let viaEntrance = '';
-    newlyUnreachable.forEach((benchId) => {
-      const r = closedResults.find((x) => x.benchId === benchId);
-      if (r?.minRepair) {
-        viaEntrance = r.minRepair.viaEntranceId;
-        r.minRepair.actions.forEach((a) => {
-          const key = `${a.trailId}:${a.action}`;
-          if (!actionDedupe.has(key)) actionDedupe.set(key, a);
-        });
-        r.minRepair.trailIds.forEach((tid) => comboTrails.add(tid));
-      }
-    });
-
-    const actions = Array.from(actionDedupe.values());
-    const minRepair: RepairCombo | undefined =
-      actions.length > 0
-        ? {
-            actions,
-            totalCost: actions.reduce((sum, a) => sum + a.cost, 0),
-            viaEntranceId: viaEntrance,
-            trailIds: Array.from(comboTrails),
-          }
-        : undefined;
-
-    return { closedTrailId: trail.id, newlyUnreachable, rerouted, minRepair };
   });
+
+  return out;
 }
 
 export function evaluateAll(input: EvaluationInput, closures: string[]): AccessSnapshot {
@@ -807,7 +919,7 @@ export function evaluateAll(input: EvaluationInput, closures: string[]): AccessS
     entranceCount: input.nodes.filter((n) => n.kind === 'entrance').length,
     summary,
     results,
-    closureImpacts: computeClosureImpacts(input, baseline, 'wheelchair'),
+    closureImpacts: computeClosureImpacts(input, baseline),
     issues,
     evaluated: true,
   };

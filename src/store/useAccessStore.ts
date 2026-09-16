@@ -45,6 +45,8 @@ interface AccessActions {
   getTrail: (id?: string) => Trail | undefined;
   /** 校验与该步道有关的硬性错误（用于保存拦截） */
   validateTrailCandidate: (candidate: Trail) => NetworkIssue[];
+  /** 校验与该地点有关的硬性错误（重复挂接等，用于保存拦截） */
+  validateNodeCandidate: (candidate: NetworkNode) => NetworkIssue[];
 }
 
 const ERROR_CODES_BLOCKING_SAVE: NetworkIssue['code'][] = [
@@ -52,6 +54,7 @@ const ERROR_CODES_BLOCKING_SAVE: NetworkIssue['code'][] = [
   'extreme_value',
   'duplicate_edge',
   'oneway_conflict',
+  'duplicate_bench_hook',
 ];
 
 export const useAccessStore = create<AccessState & AccessActions>((set, get) => {
@@ -78,7 +81,7 @@ export const useAccessStore = create<AccessState & AccessActions>((set, get) => 
         entranceCount: nodes.filter((n) => n.kind === 'entrance').length,
         summary: { total: benches.length, reachable: 0, unreachable: 0, unhooked: 0 },
         results: { wheelchair: [], walker: [], stroller: [] },
-        closureImpacts: [],
+        closureImpacts: { wheelchair: [], walker: [], stroller: [] },
         issues,
         evaluated: false,
       };
@@ -123,6 +126,17 @@ export const useAccessStore = create<AccessState & AccessActions>((set, get) => 
     getNode: (id) => get().nodes.find((n) => n.id === id),
     getTrail: (id) => get().trails.find((t) => t.id === id),
 
+    validateNodeCandidate: (candidate) => {
+      const benchState = useBenchStore.getState();
+      const benches = benchState.benches.length > 0 ? benchState.benches : loadBenches();
+      const others = get().nodes.filter((n) => n.id !== candidate.id);
+      return validateNetwork([...others, candidate], get().trails, benches).filter(
+        (issue) =>
+          (issue.nodeId === candidate.id || issue.benchId === candidate.benchId) &&
+          ERROR_CODES_BLOCKING_SAVE.includes(issue.code),
+      );
+    },
+
     validateTrailCandidate: (candidate) => {
       const { nodes, benches } = (() => {
         const benchState = useBenchStore.getState();
@@ -140,14 +154,20 @@ export const useAccessStore = create<AccessState & AccessActions>((set, get) => 
     },
 
     addNode: (data) => {
-      const node: NetworkNode = { ...data, id: generateId() };
-      commit([...get().nodes, node], get().trails, get().closedTrailIds);
+      const candidate: NetworkNode = { ...data, id: generateId() };
+      const blocking = get().validateNodeCandidate(candidate);
+      if (blocking.length > 0) return { ok: false, issues: blocking };
+      commit([...get().nodes, candidate], get().trails, get().closedTrailIds);
       return { ok: true, issues: [] };
     },
 
     updateNode: (id, updates) => {
-      // 若挂接长椅或类型发生变化，仅警告级问题，允许保存
-      const nodes = get().nodes.map((n) => (n.id === id ? { ...n, ...updates } : n));
+      const existing = get().nodes.find((n) => n.id === id);
+      if (!existing) return { ok: false, issues: [] };
+      const candidate: NetworkNode = { ...existing, ...updates, id };
+      const blocking = get().validateNodeCandidate(candidate);
+      if (blocking.length > 0) return { ok: false, issues: blocking };
+      const nodes = get().nodes.map((n) => (n.id === id ? candidate : n));
       commit(nodes, get().trails, get().closedTrailIds);
       return { ok: true, issues: [] };
     },

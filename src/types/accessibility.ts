@@ -68,7 +68,8 @@ export type IssueCode =
   | 'orphan_node'
   | 'entrance_broken'
   | 'bench_unhooked'
-  | 'dangling_bench_ref';
+  | 'dangling_bench_ref'
+  | 'duplicate_bench_hook';
 
 export interface NetworkIssue {
   level: IssueLevel;
@@ -141,7 +142,11 @@ export interface BenchAccessResult {
   alternativeCount: number;
   /** 不可达原因（可多因叠加） */
   reasons: RejectReason[];
-  /** 关键断点：阻挡步道（按经过次数/关键性排序） */
+  /**
+   * 关键断点：
+   * - 不可达时：造成阻挡的步道（修复后即可达，来自最小修复组合）
+   * - 可达时：责任路径的“桥接步道”——一旦关闭，该长椅将由可达变为不可达
+   */
   criticalTrailIds: string[];
   /** 建议的最小修复组合（基线网络） */
   minRepair?: RepairCombo;
@@ -193,7 +198,8 @@ export interface AccessSnapshot {
   };
   results: Record<ModeId, BenchAccessResult[]>;
   /** 基线（无关闭）每张被关闭步道影响的长椅，用于一键模拟 */
-  closureImpacts: ClosureImpact[];
+  /** 每个模式各自的关闭影响（单步道关闭分析随当前通行模式切换） */
+  closureImpacts: Record<ModeId, ClosureImpact[]>;
   issues: NetworkIssue[];
   evaluated: boolean;
 }

@@ -73,7 +73,6 @@ export default function NetworkEditor({ benches }: NetworkEditorProps) {
     updateTrail,
     deleteTrail,
   } = useAccessStore();
-
   const [trailForm, setTrailForm] = useState<TrailFormState>(emptyTrail);
   const [editingTrailId, setEditingTrailId] = useState<string | null>(null);
   const [trailError, setTrailError] = useState<string | null>(null);
@@ -133,13 +132,17 @@ export default function NetworkEditor({ benches }: NetworkEditorProps) {
       setNodeError('地点名称不能为空。');
       return;
     }
-    addNode({
+    const result = addNode({
       name: nodeForm.name.trim(),
       kind: nodeForm.kind,
       lat: nodeForm.lat,
       lng: nodeForm.lng,
       benchId: nodeForm.kind === 'bench' ? nodeForm.benchId || undefined : undefined,
     });
+    if (!result.ok) {
+      setNodeError(result.issues.map((i) => i.message).join('；'));
+      return;
+    }
     setNodeForm({ name: '', kind: 'junction', lat: 31.235, lng: 121.475, benchId: '' });
   };
 

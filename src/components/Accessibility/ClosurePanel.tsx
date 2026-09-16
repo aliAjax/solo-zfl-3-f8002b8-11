@@ -85,10 +85,10 @@ export default function ClosurePanel({
     });
   });
 
-  // 关闭一条步道时，基线单步道影响用于解释
+  // 关闭一条步道时，当前模式下的单步道影响（不再固定沿用轮椅结果）
   const singleImpact =
     closedIds.length === 1
-      ? snapshot?.closureImpacts.find((c) => c.closedTrailId === closedIds[0])
+      ? snapshot?.closureImpacts?.[mode]?.find((c) => c.closedTrailId === closedIds[0])
       : undefined;
 
   return (
